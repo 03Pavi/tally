@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: tally-service
+    env: node
+    plan: free
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: TALLY_API_KEY
+        sync: false
+      - key: TALLY_API_BASE_URL
+        value: https://api.tally.so
+      - key: TALLY_REQUEST_TIMEOUT_MS
+        value: 10000
+      - key: TALLY_MAX_RETRIES
+        value: 2
