@@ -1,5 +1,5 @@
 import type { Request, Response, NextFunction } from 'express';
-import { TallyApiError } from '../client/tally.client.js';
+import { TallyPrimeError } from '../modules/tally-prime/tally-prime.errors.js';
 
 export function errorHandler(
   err: Error,
@@ -7,30 +7,27 @@ export function errorHandler(
   res: Response,
   _next: NextFunction
 ): void {
-  // Check if error is from Tally client
-  if (err instanceof TallyApiError) {
-    if (err.retryAfterSeconds) {
-      res.setHeader('Retry-After', String(err.retryAfterSeconds));
-    }
-
-    res.status(err.mappedStatus).json({
+  // TallyPrime adapter errors carry safe, client-ready messages
+  if (err instanceof TallyPrimeError) {
+    res.status(err.status).json({
       success: false,
       error: {
-        code: mapStatusToErrorCode(err.mappedStatus),
+        code: err.code,
         message: err.message,
-        upstreamStatus: err.status,
+        ...(err.details !== undefined ? { details: err.details } : {}),
       },
     });
     return;
   }
 
-  // Handle configuration or validation initialization error
-  if (err.message && err.message.includes('TALLY_API_KEY')) {
-    res.status(500).json({
+  // Malformed JSON (400) and oversized bodies (413) come from the body parser and carry a status
+  const parserStatus = (err as { status?: number }).status;
+  if (parserStatus === 400 || parserStatus === 413) {
+    res.status(parserStatus).json({
       success: false,
       error: {
-        code: 'CONFIGURATION_ERROR',
-        message: 'Tally service configuration is invalid or missing required credentials',
+        code: parserStatus === 413 ? 'PAYLOAD_TOO_LARGE' : 'BAD_REQUEST',
+        message: parserStatus === 413 ? 'Request body is too large' : 'Request body is not valid JSON',
       },
     });
     return;
@@ -45,25 +42,4 @@ export function errorHandler(
       message: isProduction ? 'An unexpected internal error occurred' : err.message,
     },
   });
-}
-
-function mapStatusToErrorCode(status: number): string {
-  switch (status) {
-    case 400:
-      return 'BAD_REQUEST';
-    case 401:
-      return 'UNAUTHORIZED';
-    case 403:
-      return 'FORBIDDEN';
-    case 404:
-      return 'NOT_FOUND';
-    case 429:
-      return 'RATE_LIMITED';
-    case 502:
-      return 'UPSTREAM_GATEWAY_ERROR';
-    case 504:
-      return 'UPSTREAM_GATEWAY_TIMEOUT';
-    default:
-      return 'SERVER_ERROR';
-  }
 }

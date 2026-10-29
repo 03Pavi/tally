@@ -7,7 +7,7 @@ try {
   const server = app.listen(env.PORT, () => {
     // Only log non-sensitive configuration
     console.log(`[Tally Service] Server running on port ${env.PORT} in ${env.NODE_ENV} mode`);
-    console.log(`[Tally Service] Tally API base URL: ${env.TALLY_API_BASE_URL}`);
+    console.log(`[Tally Service] TallyPrime integration URL: ${env.TALLY_PRIME_URL}`);
   });
 
   const shutdown = (signal: string) => {

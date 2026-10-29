@@ -13,24 +13,18 @@ const envSchema = z.object({
   NODE_ENV: z
     .enum(['development', 'production', 'test'])
     .default('development'),
-  TALLY_API_KEY: z.string().min(1, 'TALLY_API_KEY is required'),
-  TALLY_API_BASE_URL: z
+  TALLY_PRIME_URL: z
     .string()
     .url()
-    .default('https://api.tally.so')
-    .refine((url) => url.startsWith('https://'), {
-      message: 'TALLY_API_BASE_URL must use HTTPS protocol',
-    }),
-  TALLY_REQUEST_TIMEOUT_MS: z
+    .default('http://localhost:9000'),
+  TALLY_PRIME_COMPANY: z
     .string()
-    .default('10000')
+    .optional(),
+  TALLY_PRIME_TIMEOUT_MS: z
+    .string()
+    .default('15000')
     .transform((val) => parseInt(val, 10))
     .pipe(z.number().int().positive()),
-  TALLY_MAX_RETRIES: z
-    .string()
-    .default('2')
-    .transform((val) => parseInt(val, 10))
-    .pipe(z.number().int().min(0).max(5)),
 });
 
 export type EnvConfig = z.infer<typeof envSchema>;

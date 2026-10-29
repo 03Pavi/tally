@@ -1,14 +1,15 @@
 import type { Application, Request, Response } from 'express';
 import swaggerUi from 'swagger-ui-express';
 import swaggerJsdoc from 'swagger-jsdoc';
+import { tallyPrimeAdminPaths, tallyPrimeCompanySchemas } from './swagger-tally-prime.js';
 
 const swaggerDefinition: swaggerJsdoc.OAS3Definition = {
   openapi: '3.0.3',
   info: {
-    title: 'Tally API Integration Service',
+    title: 'TallyPrime Mediator API',
     version: '1.0.0',
     description:
-      'Production-ready Express.js + TypeScript service integrating with the official Tally API (https://api.tally.so). Provides typed, rate-limited, and sanitized access to Users, Organizations, Forms, Questions, Submissions, Analytics, Workspaces, Folders, and Webhooks.',
+      'Express.js + TypeScript API that mediates between clients and TallyPrime on the same PC. Public read endpoints return accounting data. Writes and company management require the admin bearer token.',
     contact: {
       name: 'API Support',
     },
@@ -29,8 +30,19 @@ const swaggerDefinition: swaggerJsdoc.OAS3Definition = {
     { name: 'Workspaces', description: 'Workspace CRUD operations' },
     { name: 'Folders', description: 'Workspace folders organization' },
     { name: 'Webhooks', description: 'Webhook management and event delivery retry' },
+    { name: 'TallyPrime Admin', description: 'Authenticated write and admin operations for TallyPrime (masters, vouchers, reports). Requires the admin bearer token.' },
+    { name: 'TallyPrime', description: 'Read-only mediator for TallyPrime on the same PC: companies, ledgers, vendors, outstanding balances and financial reports' },
   ],
   components: {
+    parameters: {
+      CompanyQuery: {
+        name: 'company',
+        in: 'query',
+        required: false,
+        schema: { type: 'string', maxLength: 200 },
+        description: 'Company to use for this request. Must be a company TallyPrime currently has open. Overrides the runtime selection and TALLY_PRIME_COMPANY. Unknown names return 404 COMPANY_NOT_OPEN. When omitted and several companies are open, GET reads return each open company result under its name (data is a list of { company, status, success, data }). Writes return 409 AMBIGUOUS_COMPANY instead.',
+      },
+    },
     securitySchemes: {
       bearerAuth: {
         type: 'http',
@@ -39,6 +51,7 @@ const swaggerDefinition: swaggerJsdoc.OAS3Definition = {
       },
     },
     schemas: {
+      ...tallyPrimeCompanySchemas,
       StandardSuccessResponse: {
         type: 'object',
         properties: {
@@ -68,17 +81,7 @@ const swaggerDefinition: swaggerJsdoc.OAS3Definition = {
             properties: {
               code: {
                 type: 'string',
-                enum: [
-                  'BAD_REQUEST',
-                  'VALIDATION_ERROR',
-                  'UNAUTHORIZED',
-                  'FORBIDDEN',
-                  'NOT_FOUND',
-                  'RATE_LIMITED',
-                  'UPSTREAM_GATEWAY_ERROR',
-                  'UPSTREAM_GATEWAY_TIMEOUT',
-                  'INTERNAL_SERVER_ERROR',
-                ],
+                description: 'Machine-readable code. Admin and TallyPrime codes include NOT_SUPPORTED, TALLYPRIME_UNAVAILABLE, TALLYPRIME_REJECTED, DUPLICATE_VOUCHER and others.',
                 example: 'BAD_REQUEST',
               },
               message: { type: 'string', example: 'Invalid request parameters' },
@@ -98,6 +101,151 @@ const swaggerDefinition: swaggerJsdoc.OAS3Definition = {
           },
         },
         required: ['success', 'error'],
+      },
+      GroupCreate: {
+        type: 'object',
+        required: ['name', 'parent'],
+        properties: {
+          name: { type: 'string', maxLength: 200, example: 'Vendor Advances' },
+          parent: { type: 'string', maxLength: 200, example: 'Current Assets' },
+        },
+      },
+      GroupPatch: {
+        type: 'object',
+        required: ['parent'],
+        properties: { parent: { type: 'string', maxLength: 200, example: 'Current Liabilities' } },
+      },
+      LedgerCreate: {
+        type: 'object',
+        description: 'Unknown fields are rejected. openingBalance is signed: positive = debit, negative = credit. parent is required for ledgers; vendors and customers default to their party group.',
+        required: ['name'],
+        properties: {
+          name: { type: 'string', maxLength: 200, example: 'Bright Supplies' },
+          parent: { type: 'string', maxLength: 200, example: 'Sundry Creditors' },
+          openingBalance: { type: 'number', example: -5000, description: 'At most two decimals' },
+          mailingName: { type: 'string', maxLength: 200 },
+          addressLines: { type: 'array', maxItems: 5, items: { type: 'string', maxLength: 200 } },
+          email: { type: 'string', format: 'email', maxLength: 254 },
+          phone: { type: 'string', example: '+91 20 5555 0100' },
+          mobile: { type: 'string', example: '+91 98200 00000' },
+          gstin: { type: 'string', example: '27AAAPL1234C1ZV', description: 'Format-checked only. Not validated with the GST portal.' },
+          stateName: { type: 'string', maxLength: 100, example: 'Maharashtra' },
+        },
+      },
+      LedgerPatch: {
+        type: 'object',
+        description: 'Send only the fields to change. At least one field is required. Renaming is not supported.',
+        properties: {
+          parent: { type: 'string', maxLength: 200 },
+          openingBalance: { type: 'number' },
+          mailingName: { type: 'string', maxLength: 200 },
+          addressLines: { type: 'array', maxItems: 5, items: { type: 'string', maxLength: 200 } },
+          email: { type: 'string', format: 'email' },
+          phone: { type: 'string' },
+          mobile: { type: 'string' },
+          gstin: { type: 'string' },
+          stateName: { type: 'string', maxLength: 100 },
+        },
+        additionalProperties: false,
+      },
+      VoucherCreate: {
+        type: 'object',
+        description: 'Entries must sum to zero. Positive amount = debit, negative = credit. Two to 200 entries, each non-zero with at most two decimals.',
+        required: ['type', 'date', 'entries'],
+        properties: {
+          type: { type: 'string', enum: ['Sales', 'Purchase', 'Receipt', 'Payment', 'Contra', 'Journal'] },
+          date: { type: 'string', format: 'date', example: '2026-03-31' },
+          number: { type: 'string', maxLength: 50, description: 'Optional. When given, a duplicate type and number on the same date is refused.' },
+          partyLedger: { type: 'string', maxLength: 200 },
+          narration: { type: 'string', maxLength: 500 },
+          reference: { type: 'string', maxLength: 100 },
+          entries: {
+            type: 'array',
+            minItems: 2,
+            maxItems: 200,
+            items: {
+              type: 'object',
+              required: ['ledger', 'amount'],
+              properties: {
+                ledger: { type: 'string', maxLength: 200 },
+                amount: { type: 'number', description: 'Signed; never zero' },
+              },
+            },
+          },
+        },
+      },
+      TallyPrimeLedger: {
+        type: 'object',
+        description: 'Amounts are signed as TallyPrime exports them: positive = debit, negative = credit.',
+        properties: {
+          name: { type: 'string', example: 'ABC Traders' },
+          group: { type: 'string', nullable: true, example: 'Sundry Creditors' },
+          openingBalance: { type: 'number', nullable: true, example: 0 },
+          closingBalance: { type: 'number', nullable: true, example: -15000, description: 'Ledger total as of the period end. Not bill-wise.' },
+          balanceNature: { type: 'string', nullable: true, enum: ['debit', 'credit'], example: 'credit' },
+          currency: { type: 'string', nullable: true, example: null },
+        },
+        required: ['name', 'group', 'openingBalance', 'closingBalance', 'balanceNature', 'currency'],
+      },
+      TallyPrimeVendor: {
+        type: 'object',
+        allOf: [
+          { $ref: '#/components/schemas/TallyPrimeLedger' },
+          {
+            type: 'object',
+            properties: {
+              mailingDetails: {
+                type: 'object',
+                properties: {
+                  address: { type: 'string', nullable: true, example: 'Plot 12, Pune' },
+                  email: { type: 'string', nullable: true, example: null },
+                  phone: { type: 'string', nullable: true, example: null },
+                  mobile: { type: 'string', nullable: true, example: null },
+                },
+              },
+              gstin: { type: 'string', nullable: true, example: null, description: 'As stored on the ledger. Never derived.' },
+            },
+          },
+        ],
+      },
+      TallyPrimeVendorOutstanding: {
+        type: 'object',
+        properties: {
+          name: { type: 'string', example: 'ABC Traders' },
+          group: { type: 'string', nullable: true, example: 'Sundry Creditors' },
+          closingBalance: { type: 'number', nullable: true, example: -15000 },
+          balanceNature: { type: 'string', nullable: true, enum: ['debit', 'credit'], example: 'credit' },
+          payable: { type: 'number', nullable: true, example: 15000, description: '-closingBalance. Positive = owed to vendor.' },
+        },
+      },
+      FinancialReport: {
+        type: 'object',
+        properties: {
+          company: { type: 'string', example: 'Zenmo' },
+          asOfDate: { type: 'string', nullable: true, format: 'date', example: '2026-03-31' },
+          fromDate: { type: 'string', nullable: true, format: 'date', example: null },
+          toDate: { type: 'string', nullable: true, format: 'date', example: null },
+          lines: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                name: { type: 'string', example: 'Cash-in-hand' },
+                closingDebit: { type: 'number', nullable: true, example: 5000 },
+                closingCredit: { type: 'number', nullable: true, example: null },
+              },
+            },
+          },
+          totals: { type: 'null', example: null, description: 'Not extracted in this phase' },
+        },
+      },
+      PaginationMeta: {
+        type: 'object',
+        properties: {
+          total: { type: 'integer', example: 42 },
+          limit: { type: 'integer', example: 100 },
+          offset: { type: 'integer', example: 0 },
+        },
       },
       User: {
         type: 'object',
@@ -548,6 +696,142 @@ const swaggerDefinition: swaggerJsdoc.OAS3Definition = {
     },
   },
   paths: {
+    '/tally-prime/health': {
+      get: {
+        tags: ['TallyPrime'],
+        summary: 'API process health (does not check TallyPrime)',
+        responses: {
+          '200': { description: 'Process is healthy', content: { 'application/json': { schema: { type: 'object', properties: { success: { type: 'boolean', example: true }, data: { type: 'object', properties: { status: { type: 'string', example: 'ok' }, uptime: { type: 'number' }, timestamp: { type: 'string', format: 'date-time' } } } } } } } },
+        },
+      },
+    },
+    '/tally-prime/connection': {
+      get: {
+        tags: ['TallyPrime'],
+        summary: 'Check TallyPrime reachability with a real request',
+        description: 'Sends a company list request to TallyPrime. Failures use TALLYPRIME_ codes: TALLYPRIME_UNAVAILABLE (not running, or integration server disabled or on another port), TALLYPRIME_TIMEOUT, or UPSTREAM_GATEWAY_ERROR (rejected or malformed response).',
+        responses: {
+          '200': { description: 'TallyPrime responded', content: { 'application/json': { schema: { type: 'object', properties: { success: { type: 'boolean', example: true }, data: { type: 'object', properties: { connected: { type: 'boolean', example: true }, message: { type: 'string', example: 'TallyPrime is reachable' }, companyCount: { type: 'integer', example: 1 } } } } } } } },
+          '502': { description: 'Rejected or malformed TallyPrime response', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
+          '503': { description: 'TallyPrime not reachable', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
+          '504': { description: 'TallyPrime did not respond in time', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
+        },
+      },
+    },
+    '/tally-prime/companies': {
+      get: {
+        tags: ['TallyPrime'],
+        summary: 'List companies loaded in TallyPrime',
+        responses: {
+          '200': { description: 'Companies', content: { 'application/json': { schema: { type: 'object', properties: { success: { type: 'boolean', example: true }, data: { type: 'array', items: { type: 'object', properties: { name: { type: 'string', example: 'Zenmo' }, guid: { type: 'string', nullable: true, example: null } } } } } } } } },
+          '502': { description: 'Rejected or malformed TallyPrime response', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
+          '503': { description: 'TallyPrime not reachable', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
+        },
+      },
+    },
+    '/tally-prime/ledgers': {
+      get: {
+        tags: ['TallyPrime'],
+        summary: 'List ledger masters with balances',
+        description: 'Balance sign: positive = debit, negative = credit. balanceNature gives the same meaning in words. Closing balance is the ledger total for the current period. Currency is null when TallyPrime does not return it.',
+        parameters: [
+          { name: 'search', in: 'query', schema: { type: 'string', maxLength: 200 }, description: 'Case-insensitive name contains' },
+          { name: 'group', in: 'query', schema: { type: 'string', maxLength: 200 }, description: 'Exact parent group name, case-insensitive' },
+          { name: 'limit', in: 'query', schema: { type: 'integer', minimum: 1, maximum: 500, default: 100 } },
+          { name: 'offset', in: 'query', schema: { type: 'integer', minimum: 0, default: 0 } },
+        ],
+        responses: {
+          '200': { description: 'Ledgers', content: { 'application/json': { schema: { type: 'object', properties: { success: { type: 'boolean', example: true }, data: { type: 'array', items: { $ref: '#/components/schemas/TallyPrimeLedger' } }, meta: { $ref: '#/components/schemas/PaginationMeta' } } } } } },
+          '400': { description: 'Invalid query', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
+          '409': { description: 'No company, or several companies open without TALLY_PRIME_COMPANY', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
+          '503': { description: 'TallyPrime not reachable', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
+        },
+      },
+    },
+    '/tally-prime/ledgers/{name}': {
+      get: {
+        tags: ['TallyPrime'],
+        summary: 'Get one ledger by exact name',
+        parameters: [{ name: 'name', in: 'path', required: true, schema: { type: 'string', maxLength: 300 }, description: 'URL-encoded ledger name' }],
+        responses: {
+          '200': { description: 'Ledger', content: { 'application/json': { schema: { type: 'object', properties: { success: { type: 'boolean', example: true }, data: { $ref: '#/components/schemas/TallyPrimeLedger' } } } } } },
+          '404': { description: 'No ledger with this name', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
+          '409': { description: 'More than one ledger matches', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
+        },
+      },
+    },
+    '/tally-prime/vendors': {
+      get: {
+        tags: ['TallyPrime'],
+        summary: 'List vendors (ledgers under Sundry Creditors and its sub-groups)',
+        parameters: [
+          { name: 'search', in: 'query', schema: { type: 'string', maxLength: 200 } },
+          { name: 'limit', in: 'query', schema: { type: 'integer', minimum: 1, maximum: 500, default: 100 } },
+          { name: 'offset', in: 'query', schema: { type: 'integer', minimum: 0, default: 0 } },
+        ],
+        responses: {
+          '200': { description: 'Vendors with mailing details and GSTIN as stored on the ledger', content: { 'application/json': { schema: { type: 'object', properties: { success: { type: 'boolean', example: true }, data: { type: 'array', items: { $ref: '#/components/schemas/TallyPrimeVendor' } }, meta: { $ref: '#/components/schemas/PaginationMeta' } } } } } },
+          '400': { description: 'Invalid query', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
+        },
+      },
+    },
+    '/tally-prime/vendors/outstanding': {
+      get: {
+        tags: ['TallyPrime'],
+        summary: 'Vendor ledger balances (not bill-wise)',
+        description: 'Returns each vendor ledger closing balance as of asOfDate. This is the ledger total, not the invoice-wise outstanding. payable = -closingBalance: positive means owed to the vendor, negative means a debit (advance).',
+        parameters: [
+          { name: 'search', in: 'query', schema: { type: 'string', maxLength: 200 } },
+          { name: 'asOfDate', in: 'query', schema: { type: 'string', format: 'date', example: '2026-03-31' }, description: 'YYYY-MM-DD. Omit for the current period.' },
+          { name: 'onlyOutstanding', in: 'query', schema: { type: 'string', enum: ['true', 'false'] }, description: 'When true, returns only vendors with a non-zero closing balance' },
+        ],
+        responses: {
+          '200': { description: 'Vendor balances', content: { 'application/json': { schema: { type: 'object', properties: { success: { type: 'boolean', example: true }, data: { type: 'array', items: { $ref: '#/components/schemas/TallyPrimeVendorOutstanding' } } } } } } },
+          '400': { description: 'Invalid date or query', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
+        },
+      },
+    },
+    '/tally-prime/vendors/{name}': {
+      get: {
+        tags: ['TallyPrime'],
+        summary: 'Get one vendor by exact name',
+        parameters: [{ name: 'name', in: 'path', required: true, schema: { type: 'string', maxLength: 300 } }],
+        responses: {
+          '200': { description: 'Vendor', content: { 'application/json': { schema: { type: 'object', properties: { success: { type: 'boolean', example: true }, data: { $ref: '#/components/schemas/TallyPrimeVendor' } } } } } },
+          '404': { description: 'No vendor with this name', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
+          '409': { description: 'More than one vendor matches', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
+        },
+      },
+    },
+    '/tally-prime/reports/balance-sheet': {
+      get: {
+        tags: ['TallyPrime'],
+        summary: 'Balance Sheet report (as-of date)',
+        description: 'Lines are grouped by XML element type, not guaranteed in display order, and have no reconstructed hierarchy. totals is always null in this phase.',
+        parameters: [{ name: 'asOfDate', in: 'query', schema: { type: 'string', format: 'date', example: '2026-03-31' }, description: 'YYYY-MM-DD. Omit for TallyPrime default.' }],
+        responses: {
+          '200': { description: 'Balance Sheet lines', content: { 'application/json': { schema: { type: 'object', properties: { success: { type: 'boolean', example: true }, data: { $ref: '#/components/schemas/FinancialReport' } } } } } },
+          '400': { description: 'Invalid date', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
+          '502': { description: 'Report structure not recognized', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
+        },
+      },
+    },
+    '/tally-prime/reports/profit-loss': {
+      get: {
+        tags: ['TallyPrime'],
+        summary: 'Profit & Loss report (period)',
+        description: 'fromDate and toDate must be given together, and fromDate must not be after toDate. Omit both for TallyPrime default period.',
+        parameters: [
+          { name: 'fromDate', in: 'query', schema: { type: 'string', format: 'date', example: '2025-04-01' } },
+          { name: 'toDate', in: 'query', schema: { type: 'string', format: 'date', example: '2026-03-31' } },
+        ],
+        responses: {
+          '200': { description: 'Profit & Loss lines', content: { 'application/json': { schema: { type: 'object', properties: { success: { type: 'boolean', example: true }, data: { $ref: '#/components/schemas/FinancialReport' } } } } } },
+          '400': { description: 'Invalid or reversed date range', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
+          '502': { description: 'Report structure not recognized', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
+        },
+      },
+    },
     '/health': {
       get: {
         tags: ['Health'],
@@ -1515,6 +1799,41 @@ const swaggerDefinition: swaggerJsdoc.OAS3Definition = {
     },
   },
 };
+
+// Admin operations share path keys with the read operations (for example /tally-prime/vendors).
+// Merge them per path so neither set overwrites the other.
+const mergedPaths = swaggerDefinition.paths as Record<string, Record<string, unknown>>;
+for (const [path, adminItem] of Object.entries(tallyPrimeAdminPaths)) {
+  mergedPaths[path] = { ...(mergedPaths[path] ?? {}), ...adminItem };
+}
+
+// Keep only the TallyPrime API and the health endpoint in the documentation.
+for (const path of Object.keys(mergedPaths)) {
+  if (!path.startsWith('/tally-prime') && path !== '/health') delete mergedPaths[path];
+}
+swaggerDefinition.tags = (swaggerDefinition.tags ?? []).filter((tag) => tag.name === 'TallyPrime' || tag.name === 'TallyPrime Admin' || tag.name === 'Health');
+
+// Security follows the access rule: writes and /companies need the admin token, other GETs are public.
+for (const [path, item] of Object.entries(mergedPaths)) {
+  if (!path.startsWith('/tally-prime')) continue;
+  for (const method of ['get', 'post', 'put', 'patch', 'delete'] as const) {
+    const operation = item[method] as { security?: unknown[] } | undefined;
+    if (!operation) continue;
+    const adminOnly = method !== 'get' || path === '/tally-prime/companies' || path.startsWith('/tally-prime/companies/');
+    operation.security = adminOnly ? [{ bearerAuth: [] }] : [];
+  }
+}
+
+// Every TallyPrime operation accepts ?company=<name>, so document it once here instead of per path.
+for (const [path, item] of Object.entries(swaggerDefinition.paths as Record<string, Record<string, unknown>>)) {
+  if (!path.startsWith('/tally-prime')) continue;
+  for (const method of ['get', 'post', 'put', 'patch', 'delete'] as const) {
+    const operation = item[method] as { parameters?: unknown[] } | undefined;
+    if (operation) {
+      operation.parameters = [{ $ref: '#/components/parameters/CompanyQuery' }, ...(operation.parameters ?? [])];
+    }
+  }
+}
 
 const swaggerOptions: swaggerJsdoc.Options = {
   swaggerDefinition,

@@ -1,12 +1,10 @@
 import express, { type Application, type Request, type Response } from 'express';
-import { usersRouter } from './modules/users/users.routes.js';
-import { organizationsRouter } from './modules/organizations/organizations.routes.js';
-import { formsRouter } from './modules/forms/forms.routes.js';
-import { analyticsRouter } from './modules/analytics/analytics.routes.js';
-import { workspacesRouter } from './modules/workspaces/workspaces.routes.js';
-import { foldersRouter } from './modules/folders/folders.routes.js';
-import { webhooksRouter } from './modules/webhooks/webhooks.routes.js';
-import { tallyRouter } from './modules/tally/tally.routes.js';
+import { tallyPrimeRouter } from './modules/tally-prime/tally-prime.routes.js';
+import { createTallyPrimeAdminRouter } from './modules/tally-prime/tally-prime.admin.routes.js';
+import { requireAdminWhereNeeded } from './middleware/admin-auth.js';
+import { companyFromQuery } from './modules/tally-prime/tally-prime.company-context.js';
+import { createFanOutMiddleware } from './modules/tally-prime/tally-prime.fan-out.js';
+import { TallyPrimeClient } from './modules/tally-prime/tally-prime.client.js';
 import { errorHandler } from './middleware/error-handler.js';
 import { setupSwagger } from './config/swagger.js';
 
@@ -21,6 +19,11 @@ export function createApp(): Application {
   // Swagger UI & OpenAPI JSON documentation
   setupSwagger(app);
 
+  // Redirect root to Swagger UI documentation
+  app.get('/', (_req: Request, res: Response) => {
+    res.redirect('/api-docs');
+  });
+
   // Health check endpoint
   app.get('/health', (_req: Request, res: Response) => {
     res.status(200).json({
@@ -30,17 +33,16 @@ export function createApp(): Application {
     });
   });
 
-  // Feature modules routes
-  app.use('/api/users', usersRouter);
-  app.use('/api/organizations', organizationsRouter);
-  app.use('/api/forms', formsRouter);
-  app.use('/api/analytics', analyticsRouter);
-  app.use('/api/workspaces', workspacesRouter);
-  app.use('/api/workspaces', foldersRouter); // /api/workspaces/:workspaceId/folders
-  app.use('/api/webhooks', webhooksRouter);
-
-  // Backward-compatible unified tally router
-  app.use('/api/tally', tallyRouter);
+  // TallyPrime mediator (local XML integration, loopback only)
+  // Every TallyPrime route needs the admin bearer token (health is exempt inside requireAdmin)
+  // Writes and /companies need the admin token. Other GET routes are public.
+  app.use('/tally-prime', requireAdminWhereNeeded);
+  // ?company=<name> applies to the whole request (validated against TallyPrime's open companies)
+  app.use('/tally-prime', companyFromQuery);
+  // Without a company and with several open, reads return each open company's result
+  app.use('/tally-prime', createFanOutMiddleware(new TallyPrimeClient()));
+  app.use('/tally-prime', tallyPrimeRouter);
+  app.use('/tally-prime', createTallyPrimeAdminRouter());
 
   // 404 handler
   app.use((_req: Request, res: Response) => {
