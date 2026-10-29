@@ -80,6 +80,23 @@ export const nameParamsSchema = z.object({
   name: z.string().trim().min(1, 'Name is required').max(300, 'Name cannot exceed 300 characters'),
 });
 
+/**
+ * Runtime admin settings. Changes live in memory only and reset on restart.
+ * The token must be at least 32 characters with no spaces, so it fits in a Bearer header.
+ */
+export const adminConfigSchema = z
+  .object({
+    TALLY_PRIME_URL: z.string().trim().min(1).max(300).optional(),
+    ADMIN_API_TOKEN: z
+      .string()
+      .min(32, 'ADMIN_API_TOKEN must be at least 32 characters')
+      .max(256)
+      .regex(/^\S+$/, 'ADMIN_API_TOKEN cannot contain spaces')
+      .optional(),
+  })
+  .strict()
+  .refine((value) => value.TALLY_PRIME_URL !== undefined || value.ADMIN_API_TOKEN !== undefined, 'Send TALLY_PRIME_URL, ADMIN_API_TOKEN, or both');
+
 export const confirmQuerySchema = z.object({
   confirm: z.literal('true', { errorMap: () => ({ message: 'Destructive operation requires confirm=true' }) }),
 });

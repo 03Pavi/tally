@@ -52,6 +52,15 @@ const swaggerDefinition: swaggerJsdoc.OAS3Definition = {
     },
     schemas: {
       ...tallyPrimeCompanySchemas,
+      AdminConfigUpdate: {
+        type: 'object',
+        description: 'Send TALLY_PRIME_URL, ADMIN_API_TOKEN, or both. Unknown fields are refused.',
+        properties: {
+          TALLY_PRIME_URL: { type: 'string', maxLength: 300, example: 'http://127.0.0.1:9000' },
+          ADMIN_API_TOKEN: { type: 'string', minLength: 32, maxLength: 256, description: 'No spaces' },
+        },
+        additionalProperties: false,
+      },
       StandardSuccessResponse: {
         type: 'object',
         properties: {
@@ -1819,7 +1828,11 @@ for (const [path, item] of Object.entries(mergedPaths)) {
   for (const method of ['get', 'post', 'put', 'patch', 'delete'] as const) {
     const operation = item[method] as { security?: unknown[] } | undefined;
     if (!operation) continue;
-    const adminOnly = method !== 'get' || path === '/tally-prime/companies' || path.startsWith('/tally-prime/companies/');
+    const adminOnly =
+      method !== 'get' ||
+      path === '/tally-prime/companies' ||
+      path.startsWith('/tally-prime/companies/') ||
+      path.startsWith('/tally-prime/admin/');
     operation.security = adminOnly ? [{ bearerAuth: [] }] : [];
   }
 }

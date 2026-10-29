@@ -75,6 +75,48 @@ const CompanySelectSchema = {
 export const tallyPrimeCompanySchemas = CompanySelectSchema;
 
 export const tallyPrimeAdminPaths = {
+  '/tally-prime/admin/config': {
+    get: {
+      tags: ['TallyPrime Admin'],
+      summary: 'Read the runtime admin settings',
+      description: 'Shows the TallyPrime URL in use and whether an admin token is set, and where it comes from (runtime, environment or none). Token values are never returned.',
+      security: bearer,
+      responses: {
+        '200': ok('Current settings', {
+          type: 'object',
+          properties: {
+            TALLY_PRIME_URL: { type: 'string', example: 'http://127.0.0.1:9000/' },
+            ADMIN_API_TOKEN: {
+              type: 'object',
+              properties: {
+                configured: { type: 'boolean', example: true },
+                source: { type: 'string', enum: ['runtime', 'environment', 'none'], example: 'environment' },
+              },
+            },
+          },
+        }),
+        ...authErrors,
+      },
+    },
+    put: {
+      tags: ['TallyPrime Admin'],
+      summary: 'Change the TallyPrime URL and/or admin token, effective immediately',
+      description: 'Modifies runtime settings held in memory. TALLY_PRIME_URL must be an http URL to a loopback host. ADMIN_API_TOKEN must be at least 32 characters with no spaces; the old token stops working as soon as this succeeds. Changes reset on restart and do not update .env.',
+      security: bearer,
+      requestBody: jsonBody('AdminConfigUpdate', { TALLY_PRIME_URL: 'http://127.0.0.1:9000' }),
+      responses: {
+        '200': ok('Changed', {
+          type: 'object',
+          properties: {
+            changed: { type: 'array', items: { type: 'string' }, example: ['TALLY_PRIME_URL'] },
+            current: { type: 'object' },
+          },
+        }),
+        '400': err('Validation error, including a non-loopback URL or a short token'),
+        ...authErrors,
+      },
+    },
+  },
   '/tally-prime/companies': {
     get: {
       tags: ['TallyPrime Admin'],

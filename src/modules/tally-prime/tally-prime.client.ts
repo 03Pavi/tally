@@ -1,4 +1,5 @@
 import { getEnv } from '../../config/env.js';
+import { getRuntimeSettings } from '../../config/runtime-settings.js';
 import { TallyPrimeError } from './tally-prime.errors.js';
 import {
   buildBalanceSheetRequest,
@@ -35,7 +36,8 @@ const DEFAULT_TIMEOUT_MS = 15000;
  * TallyPrime runs on the same PC as this API, so the URL is restricted to loopback.
  */
 export class TallyPrimeClient {
-  private readonly baseUrl: string;
+  private readonly explicitUrl?: string;
+  private readonly envUrl?: string;
   private readonly defaultCompany?: string;
   private readonly timeoutMs: number;
   private readonly fetchFn: typeof fetch;
@@ -43,21 +45,28 @@ export class TallyPrimeClient {
   constructor(options: TallyPrimeClientOptions = {}) {
     const env = options.baseUrl === undefined || options.timeoutMs === undefined ? getEnvSafe() : null;
 
-    const rawUrl = options.baseUrl ?? env?.TALLY_PRIME_URL ?? DEFAULT_URL;
-    let parsed: URL;
-    try {
-      parsed = new URL(rawUrl);
-    } catch {
-      throw configurationError('TALLY_PRIME_URL is not a valid URL');
-    }
-    if (parsed.protocol !== 'http:' || !LOOPBACK_HOSTS.has(parsed.hostname)) {
-      throw configurationError('TALLY_PRIME_URL must use http and a loopback host (localhost or 127.0.0.1)');
-    }
-
-    this.baseUrl = parsed.origin + parsed.pathname.replace(/\/+$/, '');
+    this.explicitUrl = options.baseUrl;
+    this.envUrl = env?.TALLY_PRIME_URL;
     this.defaultCompany = options.defaultCompany ?? env?.TALLY_PRIME_COMPANY;
     this.timeoutMs = options.timeoutMs ?? env?.TALLY_PRIME_TIMEOUT_MS ?? DEFAULT_TIMEOUT_MS;
     this.fetchFn = options.fetchFn ?? fetch;
+    // Fail fast on a bad configured URL.
+    void this.baseUrl;
+  }
+
+  /**
+   * The integration URL in effect right now. Order: explicit option, then a runtime change made by
+   * an admin, then TALLY_PRIME_URL, then the default. Read on every request, so changes apply at once.
+   */
+  private get baseUrl(): string {
+    return normalizeLoopbackUrl(
+      this.explicitUrl ?? getRuntimeSettings().tallyPrimeUrl ?? this.envUrl ?? DEFAULT_URL
+    );
+  }
+
+  /** The integration URL in effect right now (after any runtime change). */
+  public currentUrl(): string {
+    return this.baseUrl;
   }
 
   public getDefaultCompany(): string | undefined {
@@ -163,6 +172,23 @@ export class TallyPrimeClient {
   ): Promise<ReportLine[]> {
     return parseReportLines(await this.executeXml(buildDataReportRequest(reportId, company, fromDate, toDate)));
   }
+}
+
+/**
+ * Accepts only an http URL to a loopback host and returns its origin plus any path.
+ * Throws a configuration error for anything else.
+ */
+export function normalizeLoopbackUrl(raw: string): string {
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    throw configurationError('TALLY_PRIME_URL is not a valid URL');
+  }
+  if (parsed.protocol !== 'http:' || !LOOPBACK_HOSTS.has(parsed.hostname)) {
+    throw configurationError('TALLY_PRIME_URL must use http and a loopback host (localhost or 127.0.0.1)');
+  }
+  return parsed.origin + parsed.pathname.replace(/\/+$/, '');
 }
 
 function configurationError(message: string): TallyPrimeError {

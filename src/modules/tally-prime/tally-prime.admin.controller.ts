@@ -60,6 +60,18 @@ export class TallyPrimeAdminController {
 
   // ----- Company -----
 
+  public getAdminConfig = async (_req: Request, res: Response): Promise<void> => {
+    dataOk(res, 200, this.admin.adminConfig());
+  };
+
+  public updateAdminConfig = async (req: Request, res: Response): Promise<void> => {
+    const body = req.body as { TALLY_PRIME_URL?: string; ADMIN_API_TOKEN?: string };
+    const changed = await audited(res, 'config.update', `config:${Object.keys(body).join(',')}`, async () =>
+      this.admin.updateAdminConfig(body)
+    );
+    dataOk(res, 200, { ...changed, current: this.admin.adminConfig() });
+  };
+
   public listCompanies = async (_req: Request, res: Response): Promise<void> => {
     dataOk(res, 200, await this.admin.listCompanies());
   };

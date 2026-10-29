@@ -42,8 +42,10 @@ export function createFanOutMiddleware(
   dispatchFor: (base: string) => Dispatch = dispatchToSelf
 ) {
   return async function fanOutCompanies(req: Request, res: Response, next: NextFunction): Promise<void> {
+    // Company and admin routes are never repeated per company (they need the admin token themselves).
     const isCompanyRoute = req.path === '/companies' || req.path.startsWith('/companies/');
-    if (req.method !== 'GET' || isCompanyRoute || NOT_FANNED_OUT.has(req.path)) {
+    const isAdminRoute = req.path.startsWith('/admin/');
+    if (req.method !== 'GET' || isCompanyRoute || isAdminRoute || NOT_FANNED_OUT.has(req.path)) {
       next();
       return;
     }

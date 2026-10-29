@@ -1,5 +1,6 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
 import type { NextFunction, Request, Response } from 'express';
+import { currentAdminToken } from '../config/runtime-settings.js';
 
 /**
  * Bearer-token authentication for the TallyPrime admin API.
@@ -24,7 +25,7 @@ export const ADMIN_ACTOR_LOCAL = 'res.locals.adminActor';
  */
 export function needsAdminToken(method: string, path: string): boolean {
   if (method !== 'GET') return true;
-  return path === '/companies' || path.startsWith('/companies/');
+  return path === '/companies' || path.startsWith('/companies/') || path.startsWith('/admin/');
 }
 
 /** Applies requireAdmin only to the requests that need it. */
@@ -47,7 +48,7 @@ export function requireAdmin(req: Request, res: Response, next: NextFunction): v
     return;
   }
 
-  const configured = process.env['ADMIN_API_TOKEN'] ?? '';
+  const configured = currentAdminToken();
   if (configured.length < MIN_TOKEN_LENGTH) {
     res.status(503).json({
       success: false,

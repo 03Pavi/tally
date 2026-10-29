@@ -32,6 +32,14 @@ describe('App Integration & Swagger Documentation', () => {
     expect((await request(app).post('/tally-prime/companies/select').send({ name: 'Zenmo' })).status).toBe(401);
   });
 
+  it('requires the admin token to read or change runtime admin settings', async () => {
+    expect((await request(app).get('/tally-prime/admin/config')).status).toBe(401);
+    expect((await request(app).put('/tally-prime/admin/config').send({ TALLY_PRIME_URL: 'http://127.0.0.1:9000' })).status).toBe(401);
+    const read = await request(app).get('/tally-prime/admin/config').set('Authorization', `Bearer ${ADMIN_TOKEN}`);
+    expect(read.status).toBe(200);
+    expect(JSON.stringify(read.body)).not.toContain(ADMIN_TOKEN);
+  });
+
   it('accepts the admin token on writes', async () => {
     const response = await request(app)
       .post('/tally-prime/groups')

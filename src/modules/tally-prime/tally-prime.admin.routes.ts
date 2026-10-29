@@ -9,6 +9,7 @@ import { TallyPrimeService } from './tally-prime.service.js';
 import { isoDateSchema } from './tally-prime.validators.js';
 import {
   VOUCHER_TYPES,
+  adminConfigSchema,
   confirmQuerySchema,
   groupCreateSchema,
   groupPatchSchema,
@@ -75,6 +76,10 @@ export function createTallyPrimeAdminRouter(
   const c = controller;
 
   // Company
+  // Runtime admin settings (in memory, effective immediately)
+  router.get('/admin/config', asyncHandler(c.getAdminConfig));
+  router.put('/admin/config', validate(adminConfigSchema, 'body'), asyncHandler(c.updateAdminConfig));
+
   router.get('/companies', asyncHandler(c.listCompanies));
   router.get('/companies/current', asyncHandler(c.currentCompany));
   router.post('/companies/select', validate(companySelectBody, 'body'), asyncHandler(c.selectCompany));

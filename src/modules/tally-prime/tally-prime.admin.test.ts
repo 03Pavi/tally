@@ -12,6 +12,7 @@ import { TallyPrimeService } from './tally-prime.service.js';
 import { clearIdempotencyStore } from './tally-prime.idempotency.js';
 import { parseImportResult } from './tally-prime.write-parsers.js';
 import { companyFromQuery } from './tally-prime.company-context.js';
+import { resetRuntimeSettings } from '../../config/runtime-settings.js';
 import { setRuntimeDefaultCompany } from './tally-prime.company-context.js';
 
 const TOKEN = 'test-admin-token-0123456789abcdefghij';
@@ -60,6 +61,8 @@ interface Harness {
   app: Application;
   requests: string[];
   imports: string[];
+  /** URL of every request sent to TallyPrime, in order. */
+  urls: string[];
 }
 
 interface HarnessOptions {
@@ -79,7 +82,9 @@ function clearRuntimeDefault(): void {
 function harness(options: HarnessOptions = {}): Harness {
   const requests: string[] = [];
   const imports: string[] = [];
-  const fetchFn = jest.fn(async (_url: string, init: RequestInit) => {
+  const urls: string[] = [];
+  const fetchFn = jest.fn(async (url: string, init: RequestInit) => {
+    urls.push(String(url));
     const body = String(init.body);
     requests.push(body);
     if (body.includes('Import Data')) {
@@ -95,8 +100,8 @@ function harness(options: HarnessOptions = {}): Harness {
     return new Response(xml, { status: 200 });
   }) as unknown as typeof fetch;
 
+  // No explicit baseUrl: the client resolves its URL at request time, so runtime changes apply.
   const client = new TallyPrimeClient({
-    baseUrl: 'http://127.0.0.1:9000',
     timeoutMs: 1000,
     fetchFn,
     defaultCompany: options.configured === false ? undefined : 'Zenmo',
@@ -111,7 +116,7 @@ function harness(options: HarnessOptions = {}): Harness {
   app.use('/tally-prime', createTallyPrimeRouter(new TallyPrimeController(read)));
   app.use('/tally-prime', createTallyPrimeAdminRouter(new TallyPrimeAdminController(admin)));
   app.use(errorHandler);
-  return { app, requests, imports };
+  return { app, requests, imports, urls };
 }
 
 const balancedVoucher = {
@@ -178,6 +183,84 @@ describe('Admin authentication', () => {
     expect(logged).toContain('"operation":"group.create"');
     expect(logged).not.toContain(TOKEN);
     expect(logged).toMatch(/"actor":"admin:[0-9a-f]{8}"/);
+  });
+});
+
+describe('Runtime admin config', () => {
+  const NEW_TOKEN = 'rotated-admin-token-0123456789abcdefghij';
+
+  beforeEach(() => {
+    process.env['ADMIN_API_TOKEN'] = TOKEN;
+    resetRuntimeSettings();
+    clearIdempotencyStore();
+    jest.spyOn(console, 'info').mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    resetRuntimeSettings();
+    jest.restoreAllMocks();
+  });
+
+  it('changes the TallyPrime URL and the next request uses it', async () => {
+    const { app, urls } = harness();
+    const put = await request(app)
+      .put('/tally-prime/admin/config')
+      .set(AUTH)
+      .send({ TALLY_PRIME_URL: 'http://127.0.0.1:9555' });
+    expect(put.status).toBe(200);
+    expect(put.body.data.changed).toEqual(['TALLY_PRIME_URL']);
+    expect(put.body.data.current.TALLY_PRIME_URL).toBe('http://127.0.0.1:9555');
+
+    await request(app).get('/tally-prime/ledgers?company=Zenmo&limit=1').set(AUTH);
+    expect(urls[urls.length - 1]).toBe('http://127.0.0.1:9555');
+  });
+
+  it('refuses a non-loopback TallyPrime URL and changes nothing', async () => {
+    const { app, urls } = harness();
+    const before = (await request(app).get('/tally-prime/admin/config').set(AUTH)).body.data.TALLY_PRIME_URL;
+    const response = await request(app)
+      .put('/tally-prime/admin/config')
+      .set(AUTH)
+      .send({ TALLY_PRIME_URL: 'http://192.168.1.20:9000' });
+    expect(response.status).toBe(400);
+    expect(response.body.error.code).toBe('VALIDATION_ERROR');
+    const current = await request(app).get('/tally-prime/admin/config').set(AUTH);
+    expect(current.body.data.TALLY_PRIME_URL).toBe(before);
+    expect(urls).toHaveLength(0);
+  });
+
+  it('rotates the admin token: the old token stops working at once, the new one works', async () => {
+    const { app } = harness();
+    const put = await request(app).put('/tally-prime/admin/config').set(AUTH).send({ ADMIN_API_TOKEN: NEW_TOKEN });
+    expect(put.status).toBe(200);
+    expect(put.body.data.changed).toEqual(['ADMIN_API_TOKEN']);
+
+    expect((await request(app).get('/tally-prime/admin/config').set(AUTH)).status).toBe(401);
+    const withNew = await request(app).get('/tally-prime/admin/config').set('Authorization', `Bearer ${NEW_TOKEN}`);
+    expect(withNew.status).toBe(200);
+    expect(withNew.body.data.ADMIN_API_TOKEN).toEqual({ configured: true, source: 'runtime' });
+  });
+
+  it('never returns a token value', async () => {
+    const { app } = harness();
+    await request(app).put('/tally-prime/admin/config').set(AUTH).send({ ADMIN_API_TOKEN: NEW_TOKEN });
+    const response = await request(app).get('/tally-prime/admin/config').set('Authorization', `Bearer ${NEW_TOKEN}`);
+    expect(JSON.stringify(response.body)).not.toContain(NEW_TOKEN);
+    expect(JSON.stringify(response.body)).not.toContain(TOKEN);
+  });
+
+  it('refuses a short or spaced token', async () => {
+    const { app } = harness();
+    expect((await request(app).put('/tally-prime/admin/config').set(AUTH).send({ ADMIN_API_TOKEN: 'short' })).status).toBe(400);
+    expect(
+      (await request(app).put('/tally-prime/admin/config').set(AUTH).send({ ADMIN_API_TOKEN: 'has a space in it 0123456789abcdefghijk' })).status
+    ).toBe(400);
+  });
+
+  it('requires an empty body to be refused and needs the admin token to change settings', async () => {
+    const { app } = harness();
+    expect((await request(app).put('/tally-prime/admin/config').set(AUTH).send({})).status).toBe(400);
+    expect((await request(app).put('/tally-prime/admin/config').send({ TALLY_PRIME_URL: 'http://127.0.0.1:9000' })).status).toBe(401);
   });
 });
 

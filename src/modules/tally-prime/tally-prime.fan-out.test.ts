@@ -92,6 +92,13 @@ describe('Company fan-out for reads', () => {
     expect(response.body.data).toBeUndefined();
   });
 
+  it('does not fan out admin routes', async () => {
+    const app = buildApp(TWO_COMPANIES);
+    const response = await request(app).get('/tally-prime/admin/config');
+    // Not a company result list: the request reaches the route itself (here refused for lack of a token)
+    expect(response.body.data?.[0]?.company).toBeUndefined();
+  });
+
   it('builds the repeated URL with the company name encoded', () => {
     expect(withCompany('/tally-prime/ledgers?limit=2', 'A & B')).toBe('/tally-prime/ledgers?limit=2&company=A+%26+B');
   });

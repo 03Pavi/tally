@@ -28,6 +28,8 @@ import type {
 } from './tally-prime.types.js';
 
 import { companyFromRequest, runtimeDefaultCompany, setRuntimeDefaultCompany } from './tally-prime.company-context.js';
+import { getRuntimeSettings, setRuntimeSettings } from '../../config/runtime-settings.js';
+import { normalizeLoopbackUrl } from './tally-prime.client.js';
 
 export type CompanySource = 'request' | 'runtime' | 'configured' | 'single-open';
 
@@ -187,6 +189,51 @@ export class TallyPrimeAdminService {
           ? company.name.toLowerCase() === explicit.toLowerCase()
           : companies.length === 1,
     }));
+  }
+
+  /** Current admin-adjustable settings. Token values are never returned, only where they come from. */
+  public adminConfig(): {
+    TALLY_PRIME_URL: string;
+    ADMIN_API_TOKEN: { configured: boolean; source: 'runtime' | 'environment' | 'none' };
+  } {
+    const runtime = getRuntimeSettings();
+    const envToken = process.env['ADMIN_API_TOKEN'] ?? '';
+    const source: 'runtime' | 'environment' | 'none' = runtime.adminToken
+      ? 'runtime'
+      : envToken.length >= 32
+        ? 'environment'
+        : 'none';
+    return {
+      TALLY_PRIME_URL: this.client.currentUrl(),
+      ADMIN_API_TOKEN: { configured: source !== 'none', source },
+    };
+  }
+
+  /**
+   * Changes the TallyPrime URL and/or the admin token for the running process.
+   * Returns the names of what changed, never the values.
+   */
+  public updateAdminConfig(update: { TALLY_PRIME_URL?: string; ADMIN_API_TOKEN?: string }): { changed: string[] } {
+    const changed: string[] = [];
+    if (update.TALLY_PRIME_URL !== undefined) {
+      let normalized: string;
+      try {
+        normalized = normalizeLoopbackUrl(update.TALLY_PRIME_URL);
+      } catch (error) {
+        throw new TallyPrimeError({
+          message: (error as Error).message,
+          status: 400,
+          code: 'VALIDATION_ERROR',
+        });
+      }
+      setRuntimeSettings({ tallyPrimeUrl: normalized });
+      changed.push('TALLY_PRIME_URL');
+    }
+    if (update.ADMIN_API_TOKEN !== undefined) {
+      setRuntimeSettings({ adminToken: update.ADMIN_API_TOKEN });
+      changed.push('ADMIN_API_TOKEN');
+    }
+    return { changed };
   }
 
   /** Sets the runtime default company. The name must be open in TallyPrime right now. */
